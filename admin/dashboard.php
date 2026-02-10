@@ -2,14 +2,15 @@
 
 /**
  * REQUESTER: Dashboard with integrated ESI validation and Bulk Actions.
- * FEATURE: Bulk Send to Cashier for Approved requests.
- * STYLE: Solid fill for active navigation elements.
+ * Path: dashboard.php
+ * UPDATED: Added 'Advances' tab to ensure staff advances are visible.
+ * UPDATED: Synchronized Employee Breakdown with Simplified Payroll.
  */
 session_start();
 require_once("../functions.php");
 
 /**
- * 1. ACTION HANDLERS (Must be BEFORE any HTML output)
+ * 1. ACTION HANDLER
  */
 $tab = $_GET['tab'] ?? 'dashboard';
 $sub = strtolower((string)($_GET['sub'] ?? 'pending'));
@@ -22,7 +23,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'bulk_
         $count = 0;
         foreach ($ids as $rid) {
             $rid = (int)$rid;
-            // Security check: Only move if currently APPROVED
             $check = exeSql("SELECT status FROM payment_requests WHERE request_id=$rid LIMIT 1");
             if ($check && $check[0]['status'] === 'APPROVED') {
                 upData('payment_requests', [
@@ -131,7 +131,7 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
             <?php endif; ?>
         </div>
 
-        <div class="card shadow-sm border-0 mb-3 rounded-4 overflow-hidden">
+        <div class="card shadow-sm border-0 mb-3 rounded-4 overflow-hidden bg-white">
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0 small">
                     <thead class="bg-light">
@@ -154,25 +154,44 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
                                 $type = strtolower(trim((string)($r['request_type'] ?? 'other')));
                                 $p = json_decode($r['payload_json'] ?? '{}', true) ?: [];
                                 $hasError = false;
+                                $errorMsg = "";
                                 $typeLabel = strtoupper($type);
 
                                 if ($type === 'employee') {
                                     $empId = (int)($r['employee_id'] ?? 0);
+                                    $gross = (float)($p['gross_salary'] ?? 0);
+                                    $esi = (float)($p['esi_deduction'] ?? 0);
+                                    $lop = (float)($p['lop_amount'] ?? 0);
+
+                                    if ($gross > 21000 && $esi > 0) {
+                                        $hasError = true;
+                                        $errorMsg = "Compliance Error: Gross > 21k (ESI must be 0).";
+                                    }
+
                                     $details = "<strong>Payroll: " . h(employee_info($empId)['name']) . "</strong><br>";
-                                    $details .= "<small class='text-muted'>Gross: ₹" . number_format((float)($p['gross_salary'] ?? 0), 2) . " | PF: ₹" . ($p['pf_deduction'] ?? 0) . " | ESI: ₹" . number_format((float)($p['esi_deduction'] ?? 0), 2) . "</small>";
+                                    $details .= "<div style='font-size:0.7rem;' class='text-muted mt-1'>";
+                                    $details .= "Gross: ₹" . number_format($gross, 2) . " | ";
+                                    if ((float)($p['ot_amount'] ?? 0) > 0) $details .= "OT: ₹" . number_format((float)$p['ot_amount'], 0) . " | ";
+                                    if ((float)($p['incentives'] ?? 0) > 0) $details .= "Inc: ₹" . number_format((float)$p['incentives'], 0) . " | ";
+                                    $details .= "PF/ESI: ₹" . number_format((float)($p['pf_deduction'] ?? 0) + $esi, 0) . " | ";
+                                    if ($lop > 0) $details .= "<span class='text-danger fw-bold'>LOP: -₹" . number_format($lop, 0) . "</span> | ";
+                                    if ((float)($p['tds_deduction'] ?? 0) > 0) $details .= "TDS: ₹" . number_format((float)$p['tds_deduction'], 0);
+                                    $details .= "</div>";
+
+                                    if ($hasError) $details .= "<span class='badge bg-danger rounded-pill small mt-1'>$errorMsg</span>";
                                 } elseif ($type === 'vendor') {
                                     $details = "Vendor: <strong>" . h(vendor_name((int)$r['vendor_id'])) . "</strong>";
                                 } elseif ($type === 'advance') {
                                     $empName = h(employee_info((int)$r['employee_id'])['name']);
                                     $details = "Advance Salary: <strong>$empName</strong><br>";
-                                    $details .= "<small class='text-muted'>" . h($p['notes'] ?? 'Salary Advance') . "</small>";
+                                    $details .= "<small class='text-muted'>" . h($p['notes'] ?? 'Salary Advance Request') . "</small>";
                                     $typeLabel = "ADVANCE";
                                 } else {
                                     $details = "Purpose: <strong>" . h($p['purpose'] ?? ($p['custom_purpose'] ?? 'General Expense')) . "</strong>";
                                     $typeLabel = "OTHER";
                                 }
                             ?>
-                                <tr>
+                                <tr class="<?= $hasError ? 'table-danger-subtle' : '' ?>">
                                     <?php if ($isApprovedView): ?>
                                         <td class="ps-4"><input type="checkbox" name="selected_ids[]" value="<?= (int)$r['request_id'] ?>" class="form-check-input row-check"></td>
                                     <?php endif; ?>
@@ -221,7 +240,6 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
         font-family: 'Inter', system-ui, sans-serif;
     }
 
-    /* SOLID FILL TAB STYLE */
     .nav-tabs .nav-link {
         border: none;
         padding: 12px 25px;
@@ -241,7 +259,6 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
         box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.05);
     }
 
-    /* SOLID FILL PILL STYLE */
     .nav-pills .nav-link {
         font-weight: 700;
         color: #495057;
@@ -272,6 +289,10 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
         transform: translateY(-3px);
         box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05) !important;
     }
+
+    .table-danger-subtle {
+        background-color: #fff5f5 !important;
+    }
 </style>
 
 <div class="container-fluid px-4 mt-4">
@@ -282,15 +303,15 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
     <?php endif; ?>
 
     <header class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-4">
-        <h2 class="mb-0 text-dark fw-bold h4">KMK Finance Workspace</h2>
+        <h2 class="mb-0 text-dark fw-bold h4">Fund Request Desk</h2>
         <div class="d-flex gap-2">
             <a href="payroll.php" class="btn btn-primary rounded-pill px-4 fw-bold shadow-sm">🚀 Payroll Entry</a>
-            <a href="payment.php" class="btn btn-success rounded-pill px-4 fw-bold shadow-sm">➕ Payment Entry</a>
+            <a href="payment.php" class="btn btn-success rounded-pill px-4 fw-bold shadow-sm">➕ Payment Request</a>
         </div>
     </header>
 
     <ul class="nav nav-tabs mb-4 border-0">
-        <?php foreach (['dashboard' => 'All Overview', 'vendor' => 'Vendors', 'employee' => 'Employees', 'expenses' => 'Expenses', 'fixed' => 'Fixed'] as $t => $label): ?>
+        <?php foreach (['dashboard' => 'All Overview', 'vendor' => 'Vendors', 'employee' => 'Employees', 'advance' => 'Advances', 'expenses' => 'Expenses', 'fixed' => 'Fixed'] as $t => $label): ?>
             <li class="nav-item">
                 <a class="nav-link <?= $activeTab === $t ? 'active' : '' ?>" href="?tab=<?= h($t) ?>&sub=pending">
                     <?= h($label) ?>
@@ -320,8 +341,8 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
                 <div class="col">
                     <a class="text-decoration-none" href="?tab=<?= h($activeTab) ?>&sub=<?= $cfg[2] ?>">
                         <div class="p-3 border kpi-card h-100 shadow-sm">
-                            <div class="small fw-bold text-muted text-uppercase mb-1" style="font-size:0.65rem;"><?= $cfg[0] ?></div>
-                            <div class="h3 mb-0 fw-bold text-<?= $cfg[1] ?>"><?= $tabKPI[$st] ?></div>
+                            <div class="small fw-bold text-muted text-uppercase mb-1" style="font-size:0.65rem;"><?= h($cfg[0]) ?></div>
+                            <div class="h3 mb-0 fw-bold text-<?= h($cfg[1]) ?>"><?= $tabKPI[$st] ?></div>
                         </div>
                     </a>
                 </div>
@@ -345,7 +366,6 @@ function render_requester_table(array $rows, string $emptyMsg, string $activeSub
     </div>
 </div>
 
-<!-- Form for single send via button -->
 <form id="singleForm" method="post" style="display:none;">
     <input type="hidden" name="action" value="send_cashier">
     <input type="hidden" name="request_id" id="singleRid">

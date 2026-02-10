@@ -1,423 +1,441 @@
 <?php
 /**
- * vendors_list.php � Vendor Summary List (Main Page with Filters)
- * This version retains only Vendor Name, Status, and Vendor Payment Status filters.
- * MODIFICATION: The first column now displays the Vendor Name directly, removing the new Serial Number (S/N) column.
+ * REQUESTER: Integrated Fund Request (Advanced Version)
+ * Path: finance/payment1.php
+ * UPDATED: Integrated calculation logic from vendor_details1.php.
+ * UPDATED: Fixed balance math (Gross - Returns + Trans) and added Fixed Obligation lookups.
  */
-$db_config = [
-    'host' => 'localhost',
-    'username' => 'kmkglobal_web',
-    'password' => 'tI]rfPhdOo9zHdKw',
-    'database' => 'kmkglobal_web'
-];
-$conn = new mysqli($db_config['host'], $db_config['username'], $db_config['password'], $db_config['database']);
-if ($conn->connect_error) { die("Connection failed: " . $conn->connect_error); }
-function h($v){ return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
-function nf($n){ return number_format((float)$n, 2, '.', ''); }
-function runSql($conn, $sql) { /* ... */ $result = $conn->query($sql); /* ... */ $rows = []; if (is_object($result)) { while ($row = $result->fetch_assoc()) { $rows[] = $row; } $result->free(); } return $rows; }
-function safeEscape($conn, $value) { /* ... */ if (empty($value)) { return null; } return $conn->real_escape_string(trim($value)); }
+declare(strict_types=1);
 
-// --- MODIFIED FUNCTION: No change needed here, we still select vendor_id for logic ---
-function fetchFilteredVendors($conn, $filters) { 
-    $filter_vendor = $filters['vendor_id'];
-    $filter_status = $filters['status'];
-    
-    $where_parts = [];
-    if ($filter_vendor > 0) { $where_parts[] = "v.vendor_id = " . $filter_vendor; }
-    $escaped_status = safeEscape($conn, $filter_status);
-    if ($escaped_status !== null) { $where_parts[] = "v.status = '" . $escaped_status . "'"; }
-    
-    $where_sql = !empty($where_parts) ? " WHERE " . implode(' AND ', $where_parts) : '';
+require_once("../functions.php");
 
-    $sql = " SELECT v.vendor_id, v.vendor_name, v.status, v.account_number, v.ifsc, COALESCE(vt.total_bill, 0) AS total_bill, COALESCE(vt.total_paid, 0) AS total_paid, COALESCE(vt.balance, 0) AS balance, vt.updated_at FROM vendors v LEFT JOIN vendor_totals vt ON vt.vendor_id = v.vendor_id {$where_sql} GROUP BY v.vendor_id ORDER BY v.vendor_id DESC ";
-    
-    return runSql($conn, $sql);
-}
+/* ---------- Tiny Utils (KMK Standard) ---------- */
+if (!function_exists('v')) { function v($k, $d = null) { return $_POST[$k] ?? $_GET[$k] ?? $d; } }
+if (!function_exists('i')) { function i($x) { return is_numeric($x) ? (int)$x : 0; } }
+if (!function_exists('s')) { function s($x) { return trim((string)($x ?? '')); } }
+if (!function_exists('h')) { function h($x) { return htmlspecialchars((string)($x ?? ''), ENT_QUOTES, 'UTF-8'); } }
 
-// ... (UNCHANGED AUTO-UPDATE vendor_totals SQL, AND PHP-SIDE FILTERING)
-$update_sql = "
-    INSERT INTO vendor_totals (vendor_id, total_bill, total_paid, balance, updated_at)
-    SELECT
-        v.vendor_id,
-        COALESCE(b.total_bill_net, 0.00) + COALESCE(t.total_transportation, 0.00) AS total_bill,
-        COALESCE(p.total_payments, 0.00)  AS total_paid,
-        GREATEST(
-            COALESCE(b.total_bill_net, 0.00) + COALESCE(t.total_transportation, 0.00) - (COALESCE(p.total_payments, 0.00)),
-            0.00
-        ) AS balance,
-        NOW()
-    FROM vendors v
-    LEFT JOIN (
-        SELECT x.vendor_id, SUM(GREATEST(x.line_amount - COALESCE(rbi.return_amt,0),0)) AS total_bill_net
-        FROM (
-            SELECT grn.vendor_id, gri.grn_item_id, COALESCE( NULLIF(gri.subjective_amount,0), (GREATEST(COALESCE(gri.unit_price,0),0) * COALESCE(gri.qty_received,0)) - COALESCE( NULLIF(gri.discount_amount,0), (GREATEST(COALESCE(gri.unit_price,0),0) * COALESCE(gri.qty_received,0)) * (COALESCE(gri.discount_percentage,0)/100.0) ) + COALESCE( NULLIF(gri.tax_amount,0), ( (GREATEST(COALESCE(gri.unit_price,0),0) * COALESCE(gri.qty_received,0)) - COALESCE( NULLIF(gri.discount_amount,0), (GREATEST(COALESCE(gri.unit_price,0),0) * COALESCE(gri.qty_received,0)) * (COALESCE(gri.discount_percentage,0)/100.0) ) ) * (COALESCE(gri.tax_percentage,0)/100.0) ) ) AS line_amount
-            FROM goods_receipts grn
-            JOIN goods_receipt_items gri ON gri.grn_id = grn.grn_id
-        ) x
-        LEFT JOIN (
-            SELECT grn_item_id, SUM(total_amount) AS return_amt FROM goods_return_items GROUP BY grn_item_id
-        ) rbi ON rbi.grn_item_id = x.grn_item_id
-        GROUP BY x.vendor_id
-    ) b ON b.vendor_id = v.vendor_id
-    LEFT JOIN (
-        SELECT vendor_id, SUM(COALESCE(transportation, 0)) AS total_transportation FROM goods_receipts GROUP BY vendor_id
-    ) t ON t.vendor_id = v.vendor_id
-    LEFT JOIN (
-        SELECT vgp.vendor_id, SUM(vgp.amount + vgp.advance_used + vgp.redemption_used) AS total_payments FROM vendor_grn_payments vgp GROUP BY vgp.vendor_id
-    ) p ON p.vendor_id = v.vendor_id
-    ON DUPLICATE KEY UPDATE
-        total_bill = VALUES(total_bill),
-        total_paid = VALUES(total_paid),
-        balance    = VALUES(balance),
-        updated_at = VALUES(updated_at)
-";
-$conn->query($update_sql);
-
-/* -------------------------------------------------------------------------
- * B) Get Filter Values and Fetch Vendors
- * ----------------------------------------------------------------------- */
-$filters = [
-    'vendor_id' => isset($_GET['vendor_id']) ? (int)$_GET['vendor_id'] : 0,
-    'status' => isset($_GET['status']) ? trim($_GET['status']) : '',
-    'email' => '', 
-    'phone' => '', 
-    'grn_from' => '', 
-    'grn_to' => '', 
-    'payment_status' => isset($_GET['payment_status']) ? trim($_GET['payment_status']) : '',
-    'grn_number' => '', 
-    'branch_id' => 0 
-];
-extract($filters);
-$vendors = fetchFilteredVendors($conn, $filters);
-
-/* -------------------------------------------------------------------------
- * FILTER VENDORS BY PAYMENT STATUS (PHP-side filtering - KEPT)
- * ----------------------------------------------------------------------- */
-if (!empty($payment_status)) {
-    $filteredVendors = [];
-    foreach ($vendors as $v) {
-        $balance = (float)$v['balance'];
-        if ($payment_status === 'Paid' && abs($balance) < 0.01) {
-            $filteredVendors[] = $v;
-        } elseif ($payment_status === 'Pending' && $balance >= 0.01) {
-            $filteredVendors[] = $v;
-        }
+if (!function_exists('json_out')) {
+    function json_out($data, $code = 200) {
+        http_response_code($code);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE);
+        exit;
     }
-    $vendors = $filteredVendors;
 }
 
-/* -------------------------------------------------------------------------
- * F) Load dropdown data
- * ----------------------------------------------------------------------- */
-$all_vendors = runSql($conn, "SELECT vendor_id, vendor_name FROM vendors ORDER BY vendor_name");
+/* ---------- 1. AJAX API ROUTER ---------- */
+if (isset($_GET['ajax'])) {
+    $act = $_GET['ajax'];
+
+    // A. Fetch GRNs for Vendor (Logic matched to vendor_details1.php)
+    if ($act === 'grns') {
+        $vid = i(v('vendor_id'));
+        $bid = i(v('branch_id'));
+        
+        // Joined with subqueries to get accurate Returns and Paid values
+        $sql = "SELECT gr.grn_id, gr.grn_number, gr.total_amount, gr.transportation, gr.invoice_number, gr.paid_amount,
+                (SELECT SUM(total_amount) FROM goods_return_notes WHERE grn_id = gr.grn_id) as rtn_val
+                FROM goods_receipts gr JOIN purchase_orders po ON po.po_id = gr.po_id
+                WHERE gr.vendor_id = $vid AND po.branch_id = $bid ORDER BY gr.grn_id DESC";
+        
+        $rows = exeSql($sql) ?: [];
+        $out = [];
+        foreach ($rows as $r) {
+            $gid = (int)$r['grn_id'];
+            $returns = (float)($r['rtn_val'] ?? 0);
+            
+            // MATH: (Gross Amount - Returns) + Transportation
+            // Consistent with vendor_details1.php logic
+            $gross_in = max(0, (float)$r['total_amount'] - $returns) + (float)$r['transportation'];
+            $paid_out = (float)($r['paid_amount'] ?? 0);
+            
+            $bal = $gross_in - $paid_out;
+            
+            if ($bal > 0.01) {
+                $out[] = [
+                    'id' => $gid, 
+                    'no' => $r['grn_number'], 
+                    'inv' => $r['invoice_number'], 
+                    'total' => $gross_in, 
+                    'paid' => $paid_out, 
+                    'bal' => $bal
+                ];
+            }
+        }
+        json_out($out);
+    }
+
+    // B. Fixed Obligation Lookups
+    if ($act === 'fixed_list') {
+        json_out(exeSql("SELECT id, expense_type, (amount - IFNULL(balance_paid, 0)) as remaining FROM fixed_expenses HAVING remaining > 0") ?: []);
+    }
+    
+    if ($act === 'fixed_one') {
+        $fid = i(v('id'));
+        $row = exeSql("SELECT *, amount as total, balance_paid as paid, (amount - IFNULL(balance_paid, 0)) as bal FROM fixed_expenses WHERE id = $fid LIMIT 1");
+        json_out($row ? $row[0] : []);
+    }
+
+    // C. Event Component Lookup
+    if ($act === 'events') {
+        json_out(exeSql("SELECT event_id, event_name FROM events ORDER BY event_id DESC") ?: []);
+    }
+    if ($act === 'event_items') {
+        $eid = i(v('event_id'));
+        json_out(exeSql("SELECT item_id, item_name, balance FROM event_items WHERE event_id = $eid AND balance > 0") ?: []);
+    }
+
+    // D. Expense & Duplicate Check
+    if ($act === 'expense_summary') {
+        $p = s(v('purpose'));
+        $row = exeSql("SELECT amount, balance_paid FROM expenses WHERE purpose = '".addslashes($p)."' ORDER BY id DESC LIMIT 1");
+        if($row) {
+            $r = $row[0];
+            json_out(['total' => (float)$r['amount'], 'paid' => (float)$r['balance_paid'], 'bal' => (float)$r['amount'] - (float)$r['balance_paid']]);
+        }
+        json_out(['total'=>0,'paid'=>0,'bal'=>0]);
+    }
+
+    if ($act === 'dup_check') {
+        $type = s(v('type'));
+        $ref = s(v('ref'));
+        $exists = exeSql("SELECT request_id FROM payment_requests WHERE request_type='$type' AND status IN ('SUBMITTED','APPROVED') AND (payload_json LIKE '%$ref%') LIMIT 1");
+        json_out(['duplicate' => !empty($exists)]);
+    }
+    
+    if ($act === 'vendor_meta') {
+        $vid = i(v('vendor_id'));
+        $row = exeSql("SELECT v.account_number, v.ifsc, t.redemption_points 
+                       FROM vendors v 
+                       LEFT JOIN vendor_totals t ON t.vendor_id = v.vendor_id 
+                       WHERE v.vendor_id = $vid LIMIT 1");
+        json_out($row ? $row[0] : []);
+    }
+    exit;
+}
+
+/* ---------- 2. SUBMISSION HANDLER ---------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $pay_for = s(v('pay_for'));
+    $payload = $_POST;
+    unset($payload['action']);
+
+    $data = [
+        'request_type' => $pay_for,
+        'payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        'requested_by' => (int)($_SESSION['userId'] ?? 1),
+        'vendor_id'    => i(v('vendor_id')) ?: null,
+        'branch_id'    => i(v('branch_id')) ?: null,
+        'total_amount' => (float)s(v('pay_now', '0')),
+        'status'       => 'SUBMITTED',
+        'updated_at'   => date('Y-m-d H:i:s')
+    ];
+
+    $newId = insData('payment_requests', $data);
+    header("Location: dashboard.php?msg=submitted&rid=$newId");
+    exit;
+}
+
+include 'header.php';
+include 'nav.php';
+
+$branches = exeSql("SELECT branch_id, branch_name FROM branches ORDER BY branch_name");
+$vendors = exeSql("SELECT vendor_id, vendor_name FROM vendors ORDER BY vendor_name");
+$purposes = exeSql("SELECT DISTINCT purpose FROM expenses WHERE purpose IS NOT NULL ORDER BY purpose");
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Vendors - Summary List</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@ttskch/select2-bootstrap4-theme@1.5.2/dist/select2-bootstrap4.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.10/css/dataTables.bootstrap5.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/datatables.net-buttons-bs5@2.4.2/css/buttons.bootstrap5.min.css">
-<style>
-     /* Retain core styles */
-     .badge-paid { background:#e8f7e9; color:#155724; border:1px solid #b7e2bb; font-weight:600; }
-     .badge-pending { background:#fff7e6; color:#8a6100; border:1px solid #ffe0a3; font-weight:600; }
-     .filter-section { background:#f8f9fa; padding:20px; border-radius:8px; margin-bottom:20px; }
-     
-     /* Filter Grid Layout: 4 columns for 3 filters + 1 button group */
-     .filter-row { display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; margin-bottom:15px; }
-     .filter-group { 
-         display:flex; 
-         flex-direction:column; 
-         justify-content: space-between;
-     }
-     .filter-group label { font-weight:600; font-size:0.875rem; margin-bottom:5px; color:#495057; }
-     .filter-group .select2-container { width: 100% !important; }
 
-     /* Specific fix for the button group to align its content to the bottom */
-     .filter-group .filter-buttons {
-         margin-top: auto; 
-     }
+<div class="container py-5" style="max-width: 1100px;">
+    <div class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3">
+        <div>
+            <h1 class="h3 mb-0 text-primary fw-bold">Integrated Payment Desk</h1>
+            <p class="text-muted small mb-0">Multi-category fund request portal with ledger synchronization.</p>
+        </div>
+        <a href="dashboard.php" class="btn btn-outline-secondary btn-sm rounded-pill px-4">Back to Dashboard</a>
+    </div>
 
-     @media (max-width: 1500px) { .filter-row { grid-template-columns: repeat(3, 1fr); } }
-     @media (max-width: 1000px) { .filter-row { grid-template-columns: repeat(2, 1fr); } }
-     @media (max-width: 768px) { .filter-row { grid-template-columns: 1fr; } }
-     
-     /* Style for DataTables top bar elements to be inline (UNCHANGED) */
-     #vendorsTable_wrapper .top-bar {
-         display: flex;
-         justify-content: space-between;
-         align-items: center;
-         margin-bottom: 8px;
-         flex-wrap: wrap; 
-     }
-     #vendorsTable_wrapper .top-bar .dt-buttons {
-         order: 2; 
-     }
-     #vendorsTable_wrapper .top-bar div[id$="_length"] {
-         order: 1; 
-     }
-     #vendorsTable_wrapper .top-bar div[id$="_filter"] {
-         order: 3; 
-     }
-</style>
-</head>
-<body class="bg-light">
-     <?php  include 'nav.php'; ?>
-
-<div class="container-fluid p-4">
-    <h2 class="mb-3">Vendors List</h2>
-
-    <div class="filter-section">
-        <h5 class="mb-3">Filters</h5>
-        <form method="GET" action="" id="filterForm">
-            <div class="filter-row">
-                <div class="filter-group">
-                    <label for="vendor_id">Vendor Name</label>
-                    <select name="vendor_id" id="vendor_id" class="form-select">
-                        <option value="">All Vendor Names</option>
-                        <?php foreach ($all_vendors as $av): ?>
-                            <option value="<?= h($av['vendor_id']) ?>" <?= $vendor_id == $av['vendor_id'] ? 'selected' : '' ?>><?= h($av['vendor_name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label for="status">Status</label>
-                    <select name="status" id="status" class="form-select">
-                        <option value="">All Statuses</option>
-                        <option value="Active" <?= $status === 'Active' ? 'selected' : '' ?>>Active</option>
-                        <option value="Inactive" <?= $status === 'Inactive' ? 'selected' : '' ?>>Inactive</option>
-                    </select>
-                </div>
-                <div class="filter-group">
-                    <label for="payment_status">Vendor Payment Status</label>
-                    <select name="payment_status" id="payment_status" class="form-select">
-                        <option value="">All Statuses</option>
-                        <option value="Pending" <?= $payment_status === 'Pending' ? 'selected' : '' ?>>Pending</option>
-                        <option value="Paid" <?= $payment_status === 'Paid' ? 'selected' : '' ?>>Paid</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <div class="filter-buttons">
-                        <input type="hidden" name="branch_id" value="0">
-                        <input type="hidden" name="grn_number" value="">
-                        <input type="hidden" name="grn_from" value="">
-                        <input type="hidden" name="grn_to" value="">
-                        <button type="submit" class="btn btn-primary">Apply Filters</button> <a href="?" class="btn btn-secondary">Reset Filters</a>
+    <form method="POST" id="payForm">
+        <!-- Category Selector -->
+        <div class="card mb-4 border-start border-4 border-primary shadow-sm">
+            <div class="card-body p-4">
+                <div class="row align-items-center">
+                    <div class="col-md-5">
+                        <label class="form-label small fw-bold text-muted text-uppercase">Request Category</label>
+                        <select name="pay_for" id="pay_for" class="form-select border-2 border-primary fw-bold" required>
+                            <option value="">-- Choose Category --</option>
+                            <option value="vendor">Vendor Settlement (GRN Linked)</option>
+                            <option value="expenses">Operational Expense</option>
+                            <option value="fixed">Fixed Obligation (Rent/Bills)</option>
+                            <option value="event">Event Material/Services</option>
+                        </select>
+                    </div>
+                    <div class="col-md-7">
+                        <div id="dup_warning" class="alert alert-warning py-2 mb-0 d-none" style="font-size:0.8rem;">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i> Warning: A similar request is already pending in the system.
+                        </div>
                     </div>
                 </div>
             </div>
-        </form>
-    </div>
+        </div>
 
-    <div class="table-responsive">
-        <table id="vendorsTable" class="table table-bordered table-striped table-hover align-middle" style="width:100%">
-            <thead class="table-dark">
-                <tr>
-                    <th>Vendor</th>
-                    <th>Status</th>
-                    <th>Account #</th>
-                    <th>IFSC</th>
-                    <th>Total Bill</th>
-                    <th>Total Paid</th>
-                    <th>Balance</th>
-                    <th>Payment Status</th>
-                    <th>Action</th>
-                    <th>Totals Updated</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php
-            // REMOVED: $serial_number = 1;
-            if (!empty($vendors)) {
-                foreach ($vendors as $v) {
-                    $vid = (int)$v['vendor_id'];
+        <!-- VENDOR BLOCK -->
+        <div id="vendor_block" class="card mb-4 d-none border-0 rounded-4 shadow-sm overflow-hidden">
+            <div class="card-header bg-info text-white fw-bold py-3">Vendor & Invoice Specification</div>
+            <div class="card-body p-4 bg-light">
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">VENDOR NAME</label>
+                        <select name="vendor_id" id="v_id" class="form-select select2">
+                            <option value="">-- Choose Vendor --</option>
+                            <?php foreach($vendors as $v): ?><option value="<?= $v['vendor_id'] ?>"><?= h($v['vendor_name']) ?></option><?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">PROCESSING BRANCH</label>
+                        <select name="branch_id" id="v_branch" class="form-select">
+                            <option value="">-- Choose Branch --</option>
+                            <?php foreach($branches as $b): ?><option value="<?= $b['branch_id'] ?>"><?= h($b['branch_name']) ?></option><?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="row g-3 mb-4">
+                    <div class="col-md-8">
+                        <div class="mb-2"><label class="form-label small fw-bold">SELECT PENDING INVOICES (FIFO Split)</label></div>
+                        <div id="grn_container" class="p-3 bg-white border rounded-3" style="max-height:300px; overflow-y:auto;">
+                            <div class="text-muted text-center py-4">Select vendor and branch to load invoices...</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="p-3 bg-white border rounded-3 h-100">
+                             <label class="form-label small fw-bold text-muted">VENDOR MASTER INFO</label>
+                             <div id="vendor_meta_display" class="small mt-2">
+                                 <div class="text-muted italic">Select vendor to view details...</div>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-                    $vendor_total_amount_from_db = (float)$v['total_bill'];
-                    $vendor_total_paid_from_db    = (float)$v['total_paid'];
-                    $vendor_balance_from_db      = (float)$v['balance'];
-                    $paymentStatus = (abs($vendor_balance_from_db) < 0.01) ? 'Paid' : 'Pending';
-                    $updatedAt = !empty($v['updated_at']) ? date('Y-m-d H:i', strtotime($v['updated_at'])) : '';
-                    
-                    // Vendor ID is now only stored in the data attribute, not displayed
-                    $grn_filters_data = "data-vendor-id='{$vid}' data-grn-from='' data-grn-to='' data-grn-number='' data-branch-id='0' ";
+        <!-- FIXED OBLIGATION BLOCK -->
+        <div id="fixed_block" class="card mb-4 d-none border-0 rounded-4 shadow-sm overflow-hidden">
+            <div class="card-header bg-secondary text-white fw-bold py-3">Fixed Recurring Obligation</div>
+            <div class="card-body p-4 bg-light">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">SELECT OBLIGATION</label>
+                        <select name="fixed_id" id="f_id" class="form-select select2"></select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">SCHEDULE DETAILS</label>
+                        <input type="text" id="f_meta" class="form-control bg-white" readonly placeholder="N/A">
+                    </div>
+                </div>
+            </div>
+        </div>
 
-                    echo '<tr id="vendor-'.$vid.'">';
+        <!-- EVENT BLOCK -->
+        <div id="event_block" class="card mb-4 d-none border-0 rounded-4 shadow-sm overflow-hidden">
+            <div class="card-header bg-warning text-dark fw-bold py-3">Event Billing Linkage</div>
+            <div class="card-body p-4 bg-light">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">SELECT EVENT</label>
+                        <select name="event_id" id="e_id" class="form-select select2"></select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">SERVICE COMPONENT</label>
+                        <select name="event_item_id" id="e_item" class="form-select"></select>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-                    // STARTING WITH VENDOR NAME COLUMN
-                    echo '<td class="text-nowrap">'.h($v['vendor_name']);
-                    if ($vendor_balance_from_db > 0.01) echo ' <span class="badge badge-soft ms-1">Due</span>';
-                    echo '</td>';
-                    
-                    echo '<td>'.h($v['status']).'</td>';
-                    
-                    echo '<td>'.h($v['account_number']).'</td>';
-                    echo '<td>'.h($v['ifsc']).'</td>';
+        <!-- EXPENSE BLOCK -->
+        <div id="expenses_block" class="card mb-4 d-none border-0 rounded-4 shadow-sm overflow-hidden">
+            <div class="card-body p-4">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">PURPOSE / CATEGORY</label>
+                        <select name="purpose" id="exp_purpose" class="form-select select2">
+                            <option value="">-- Select Purpose --</option>
+                            <?php foreach($purposes as $p): ?><option value="<?= h($p['purpose']) ?>"><?= h($p['purpose']) ?></option><?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold">BRANCH</label>
+                        <select name="branch_id" id="exp_branch" class="form-select">
+                            <?php foreach($branches as $b): ?><option value="<?= $b['branch_id'] ?>"><?= h($b['branch_name']) ?></option><?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-                    echo '<td>'.h(nf($vendor_total_amount_from_db)).'</td>';
-                    echo '<td>'.h(nf($vendor_total_paid_from_db)).'</td>';
-                    echo '<td>'.h(nf($vendor_balance_from_db)).'</td>';
+        <!-- SETTLEMENT SUMMARY -->
+        <div id="settlement_block" class="card mb-5 d-none shadow-lg border-0 rounded-4 overflow-hidden">
+            <div class="card-header bg-dark text-white py-3 d-flex justify-content-between">
+                <h6 class="mb-0 fw-bold">FINANCIAL SETTLEMENT</h6>
+                <div id="split_summary" class="small text-warning fw-bold"></div>
+            </div>
+            <div class="card-body p-4">
+                <div class="row g-4 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small text-muted text-uppercase">Calculated Balance</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-light">₹</span>
+                            <input type="text" id="view_bal" class="form-control bg-light border-0 fw-bold text-danger" readonly value="0.00">
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold text-dark">AMOUNT TO PAY NOW *</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-primary text-white">₹</span>
+                            <input type="number" step="0.01" name="pay_now" id="pay_now" class="form-control border-primary fw-bold" required>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold text-muted text-uppercase">Justification / Remarks</label>
+                        <textarea name="notes" class="form-control" rows="1" placeholder="Reason for fund request..."></textarea>
+                    </div>
+                </div>
 
-                    echo '<td>';
-                    if ($paymentStatus === 'Paid') echo '<span class="badge badge-paid">Paid</span>';
-                    else echo '<span class="badge badge-pending">Pending</span>';
-                    echo '</td>';
+                <div id="allocation_preview" class="mt-4 p-3 bg-primary-subtle rounded-3 d-none border border-primary-subtle">
+                    <span class="small fw-bold text-primary text-uppercase">Automatic Allocation Preview:</span>
+                    <div id="allocation_list" class="mt-1 small"></div>
+                </div>
+            </div>
+        </div>
 
-                    // Action Column
-                    echo '<td class="text-center">';
-                    echo '<button type="button" class="btn btn-sm btn-info text-white view-details-btn" ' . $grn_filters_data . '>';
-                    echo 'View Details';
-                    echo '</button>';
-                    echo '</td>';
+        <div id="hidden_splits"></div>
 
-                    echo '<td class="text-nowrap">'.h($updatedAt).'</td>';
-
-                    echo '</tr>';
-                }
-            } else {
-                // Colspan adjusted from 10 back to 9
-                echo '<tr><td colspan="9" class="text-center text-muted py-4">No vendors found matching the filters.</td></tr>';
-            }
-            ?>
-            </tbody>
-            <tfoot>
-                <tr>
-                    <td colspan="3"></td> 
-                    <td class="dt-total-bill"></td>
-                    <td class="dt-total-paid"></td>
-                    <td class="dt-total-balance"></td>
-                    <td colspan="3"></td> 
-                </tr>
-            </tfoot>
-        </table>
-    </div>
+        <div class="text-center mb-5">
+            <button type="submit" class="btn btn-primary btn-lg rounded-pill shadow-lg px-5 py-3 fw-bold">
+                <i class="bi bi-send-check me-2"></i> Submit Fund Request
+            </button>
+        </div>
+    </form>
 </div>
 
-<form id="detailsForm"  action="vendor_details" method="POST" style="display:none;">
-    <input type="hidden" name="vendor_id" id="post_vendor_id">
-    <input type="hidden" name="grn_from" id="post_grn_from">
-    <input type="hidden" name="grn_to" id="post_grn_to">
-    <input type="hidden" name="grn_number" id="post_grn_number">
-    <input type="hidden" name="branch_id" id="post_branch_id">
-</form>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.10/js/jquery.dataTables.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.10/js/dataTables.bootstrap5.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net-buttons@2.4.2/js/dataTables.buttons.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net-buttons@2.4.2/js/buttons.bootstrap5.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net-buttons@2.4.2/js/buttons.html5.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/datatables.net-buttons@2.4.2/js/buttons.print.min.js"></script>
-
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script>
-function formatMoney(n){ var x = Number(n || 0); return x.toFixed(2); }
-function parseMoney(s){
-    if (s == null || s === '') return 0;
-    var n = (typeof s === 'string') ? s.replace(/,/g,'') : String(s);
-    var v = parseFloat(n);
-    return isNaN(v) ? 0 : v;
-}
+    const q = s => document.querySelector(s);
+    const payFor = q('#pay_for'), pNow = q('#pay_now');
 
-jQuery(function($){
-    $('#vendor_id').select2({ theme: 'bootstrap4', placeholder: "Search or Select Vendor Name", allowClear: true });
-    
-    const form = $('#filterForm');
-    const autoSubmitFields = ['#vendor_id', '#status', '#payment_status']; 
-    $(autoSubmitFields.join(', ')).on('change', function() { form.submit(); });
+    payFor.onchange = () => {
+        ['vendor','event','expenses','fixed','settlement'].forEach(id => q('#'+id+'_block')?.classList.add('d-none'));
+        q('#settlement_block').classList.toggle('d-none', !payFor.value);
+        
+        if (payFor.value === 'vendor') q('#vendor_block').classList.remove('d-none');
+        if (payFor.value === 'event') { q('#event_block').classList.remove('d-none'); loadEvents(); }
+        if (payFor.value === 'expenses') q('#expenses_block').classList.remove('d-none');
+        if (payFor.value === 'fixed') { q('#fixed_block').classList.remove('d-none'); loadFixed(); }
+        
+        q('#view_bal').value = '0.00';
+    };
 
-    $('.view-details-btn').on('click', function() {
-        const btn = $(this);
-        const detailsForm = $('#detailsForm');
+    /** Vendor Meta & GRN Loading **/
+    const refreshVendor = async () => {
+        const vid = q('#v_id').value, bid = q('#v_branch').value;
+        if (!vid) return;
+        
+        // 1. Load Bank & Points info
+        const meta = await fetch(`?ajax=vendor_meta&vendor_id=${vid}`).then(r => r.json());
+        q('#vendor_meta_display').innerHTML = `
+            <div class="mb-1"><strong>A/c:</strong> ${meta.account_number || 'N/A'}</div>
+            <div class="mb-1"><strong>IFSC:</strong> ${meta.ifsc || 'N/A'}</div>
+            <div class="text-info fw-bold"><strong>Avail. Points:</strong> ₹${parseFloat(meta.redemption_points || 0).toLocaleString()}</div>
+        `;
 
-        $('#post_vendor_id').val(btn.data('vendor-id'));
-        $('#post_grn_from').val(btn.data('grn-from') || '');
-        $('#post_grn_to').val(btn.data('grn-to') || '');
-        $('#post_grn_number').val(btn.data('grn-number') || '');
-        $('#post_branch_id').val(btn.data('branch-id') || '');
+        if (!bid) return;
 
-        detailsForm.submit();
-    });
+        // 2. Load Invoices
+        const data = await fetch(`?ajax=grns&vendor_id=${vid}&branch_id=${bid}`).then(r => r.json());
+        let html = data.length ? '' : '<div class="text-center py-3 text-muted">No pending invoices found.</div>';
+        data.forEach(g => {
+            html += `<label class="d-flex justify-content-between align-items-center p-3 border-bottom border-light-subtle cursor-pointer hover-bg-light">
+                <div class="d-flex align-items-center gap-3">
+                    <input type="checkbox" class="grn-cb form-check-input border-2" value="${g.id}" data-bal="${g.bal}" data-no="${g.no}">
+                    <div><div class="fw-bold text-dark">${g.no}</div><div class="small text-muted">Inv: ${g.inv || 'N/A'}</div></div>
+                </div>
+                <div class="text-end">
+                    <div class="small text-muted">Outstanding</div>
+                    <div class="fw-bold text-danger">₹${g.bal.toLocaleString()}</div>
+                </div>
+            </label>`;
+        });
+        q('#grn_container').innerHTML = html;
+        updateBalance();
+    };
+    q('#v_id').onchange = q('#v_branch').onchange = refreshVendor;
 
-    const $vendorsTable = $('#vendorsTable');
-    // Now 10 columns total (Vendor: 0, Status: 1, Account #: 2, IFSC: 3, Total Bill: 4, Total Paid: 5, Balance: 6, Payment Status: 7, Action: 8, Totals Updated: 9)
-    const hasVendorData = $vendorsTable.find('tbody tr').length > 0 && $vendorsTable.find('tbody tr').eq(0).find('td').length > 1;
-
-    if (!hasVendorData) {
-        console.log("Skipping DataTables init: No vendors found or data row is missing columns.");
-        return;
+    function updateBalance() {
+        let total = 0;
+        document.querySelectorAll('.grn-cb:checked').forEach(cb => total += parseFloat(cb.dataset.bal));
+        q('#view_bal').value = total.toFixed(2);
+        doSplit();
     }
-    
-    // New Indices (10 columns): Vendor: 0, Status: 1, Account #: 2, IFSC: 3, Total Bill: 4, Total Paid: 5, Balance: 6, Payment Status: 7, Action: 8, Totals Updated: 9
-    
-    var dt = $vendorsTable.DataTable({
-        pageLength: 10,
-        lengthMenu: [10,25,50,100],
-        order: [[0, 'asc']], // Order by Vendor Name (now index 0)
-        scrollX: true,
-        dom: '<"top-bar"lBf>rtip',
-        language: { emptyTable: 'No vendors found', zeroRecords: 'No matching records found' },
-        columnDefs: [
-            // Action (8) is the only non-orderable column now
-            { "orderable": false, "targets": [8] } 
-        ],
-        buttons: [
-            {
-                extend: 'excelHtml5',
-                title: 'Vendors-Summary-Report-' + new Date().toISOString().slice(0, 10),
-                // EXCEL Export columns: Exclude Action (index 8)
-                exportOptions: { columns: [0, 1, 2, 3, 4, 5, 6, 7, 9] } 
-            },
-            {
-                extend: 'print',
-                title: 'Vendors Report (Summary)',
-                text: 'Print',
-                autoPrint: true,
-                // PRINT Export columns: Exclude Action (index 8) and Totals Updated (9)
-                exportOptions: { columns: [0, 1, 2, 3, 4, 5, 6, 7] }, 
-                customize: function (win) {
-                    var $body = $(win.document.body);
-                    $body.find('table').addClass('compact');
-                    $body.prepend('<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">' +
-                        '<div style="font-weight:700;font-size:18px;line-height:1.2;">Vendors Report</div>' +
-                        '<div style="text-align:right;font-size:12px;">Printed on: ' + new Date().toLocaleString() + '</div></div>');
-                    var totalBill = 0, totalPaid = 0, totalBal = 0;
-                    $body.find('table tbody tr').each(function(){
-                        var $tds = $(this).find('td');
-                        // Check for 10 columns
-                        if ($tds.length === 10) { 
-                            // Indices for amounts are now: Total Bill: 4, Total Paid: 5, Balance: 6
-                            var bill = parseMoney($tds.eq(4).text());
-                            var paid = parseMoney($tds.eq(5).text());
-                            var bal  = parseMoney($tds.eq(6).text());
-                            if (!isNaN(bill)) totalBill += bill;
-                            if (!isNaN(paid)) totalPaid += paid;
-                            if (!isNaN(bal))  totalBal  += bal;
-                        }
-                    });
-                    $body.prepend('<div style="margin-bottom:8px;font-size:12px;"><strong>Summary:</strong> Total Bill: ' + formatMoney(totalBill) + ' &nbsp;|&nbsp; Total Paid: ' + formatMoney(totalPaid) + ' &nbsp;|&nbsp; Balance: ' + formatMoney(totalBal) + '</div>');
-                }
+
+    /** FIFO Split Logic **/
+    function doSplit() {
+        if (payFor.value !== 'vendor') return;
+        const cbs = Array.from(document.querySelectorAll('.grn-cb:checked'));
+        let rem = parseFloat(pNow.value || 0);
+        let html = '', hidden = '';
+        cbs.forEach(cb => {
+            let b = parseFloat(cb.dataset.bal);
+            let amt = Math.min(rem, b);
+            if (amt > 0) {
+                html += `<div class="d-flex justify-content-between border-bottom pb-1 mb-1"><span>${cb.dataset.no}</span><strong>₹${amt.toFixed(2)}</strong></div>`;
+                hidden += `<input type="hidden" name="grn_ids[]" value="${cb.value}"><input type="hidden" name="grn_splits[${cb.value}]" value="${amt}">`;
+                rem -= amt;
             }
-        ],
-        footerCallback: function(row, data, start, end, display) {
-            var api = this.api();
-            // Column indices for totals are now: Total Bill: 4, Total Paid: 5, Balance: 6
-            var totalBill = api.column(4, {page: 'current' }).data().reduce(function (a, b) { return parseMoney(a) + parseMoney(b); }, 0);
-            var totalPaid = api.column(5, { page: 'current' }).data().reduce(function (a, b) { return parseMoney(a) + parseMoney(b); }, 0);
-            var totalBalance = api.column(6, { page: 'current' }).data().reduce(function (a, b) { return parseMoney(a) + parseMoney(b); }, 0);
-            $(api.column(4).footer()).html(formatMoney(totalBill));
-            $(api.column(5).footer()).html(formatMoney(totalPaid));
-            $(api.column(6).footer()).html(formatMoney(totalBalance));
-        }
+        });
+        q('#allocation_list').innerHTML = html;
+        q('#allocation_preview').classList.toggle('d-none', !html);
+        q('#hidden_splits').innerHTML = hidden;
+    }
+
+    /** Fixed Logic **/
+    async function loadFixed() {
+        const res = await fetch('?ajax=fixed_list').then(r => r.json());
+        q('#f_id').innerHTML = '<option value="">-- Select Obligation --</option>' + res.map(x => `<option value="${x.id}">${x.expense_type.toUpperCase()}</option>`).join('');
+    }
+    q('#f_id').onchange = async () => {
+        if(!q('#f_id').value) return;
+        const x = await fetch('?ajax=fixed_one&id=' + q('#f_id').value).then(r => r.json());
+        q('#f_meta').value = `${x.frequency} | Due Day: ${x.due_day}`;
+        q('#view_bal').value = parseFloat(x.bal).toFixed(2);
+    };
+
+    /** Event Logic **/
+    async function loadEvents() {
+        const res = await fetch('?ajax=events').then(r => r.json());
+        q('#e_id').innerHTML = '<option value="">-- Choose Event --</option>' + res.map(e => `<option value="${e.event_id}">${e.event_name}</option>`).join('');
+    }
+    q('#e_id').onchange = async () => {
+        const res = await fetch('?ajax=event_items&event_id=' + q('#e_id').value).then(r => r.json());
+        q('#e_item').innerHTML = '<option value="">-- Component --</option>' + res.map(i => `<option value="${i.item_id}" data-bal="${i.balance}">${i.item_name}</option>`).join('');
+    };
+    q('#e_item').onchange = () => {
+        const opt = q('#e_item').selectedOptions[0];
+        q('#view_bal').value = opt?.dataset.bal || '0.00';
+    };
+
+    /** Init & Listeners **/
+    pNow.oninput = doSplit;
+    document.addEventListener('change', e => { if(e.target.classList.contains('grn-cb')) updateBalance(); });
+    
+    $(document).ready(function() {
+        $('.select2').select2({ theme: 'bootstrap4', width: '100%' });
     });
-});
 </script>
-</body>
-</html>
+
+<style>
+    .cursor-pointer { cursor: pointer; }
+    .hover-bg-light:hover { background-color: #f8f9fa; }
+    .grn-cb:checked + div { color: #0d6efd; }
+</style>
+
+<?php include 'footer.php'; ?>

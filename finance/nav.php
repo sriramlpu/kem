@@ -1,205 +1,65 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) { session_start(); }
 $currentPage = basename($_SERVER['PHP_SELF']);
-session_start();
-
-$userName = ($_SESSION['userName'] ?? 'Guest'); // Use null coalescing operator for safety
+$userName = $_SESSION['userName'] ?? 'Guest';
 $userRole = strtolower($_SESSION['roleName'] ?? '');
 
-// --- Logic to Determine Panel Button Link and Label ---
 $panelLink = '';
 $panelLabel = '';
-
-// NOTE: Update these paths (e.g., ../admin/index.php) to match your actual file structure
 if ($userRole === 'admin') {
     $panelLink = '../admin/dashboard.php';
-    $panelLabel = 'Requester';
+    $panelLabel = 'Admin Dashboard';
 } elseif ($userRole === 'requester') {
-    $panelLink = '../admin/dashboard.php';
+    $panelLink = '../requester/dashboard.php';
     $panelLabel = 'Requester Panel';
 }
-// --- End Logic ---
 ?>
-<nav class="kmk-navbar">
-  <div class="kmk-nav-inner">
-    <a class="kmk-brand " href="clients.php" aria-label="Home">
-      <img src="../assets/img/logo.jpg" alt="Logo" class="kmk-logo">
+<nav class="navbar navbar-expand-lg bg-white fixed-top border-bottom py-2 shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand me-4" href="index.php">
+      <img src="../assets/img/logo.jpg" alt="Logo" height="45">
     </a>
 
-    <ul class="kmk-center-links">
-      <!--<li>-->
-      <!--  <a href="index.php"-->
-      <!--     class="kmk-link <?//= $currentPage === 'vendors_list.php' ? 'is-active' : '' ?>">-->
-      <!--    Vendor_Reports(Updated)-->
-      <!--  </a>-->
-      <!--</li>-->
-      <li>
-        <a href="vendor.php"
-           class="kmk-link <?= $currentPage === 'vendor.php' ? 'is-active' : '' ?>">
-          Vendors
-        </a>
-      </li>
-      <li>
-        <a href="employees.php"
-           class="kmk-link <?= $currentPage === 'employees.php' ? 'is-active' : '' ?>">
-          Employees
-        </a>
-      </li>
-      <li>
-        <a href="expenses.php"
-           class="kmk-link <?= $currentPage === 'expenses.php' ? 'is-active' : '' ?>">
-          Expenses
-        </a>
-      </li>
-    </ul>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#financeNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
 
-    <div class="kmk-right-section">
-      
-      <?php if (!empty($panelLink)): ?>
-      <a href="<?php echo $panelLink; ?>" class="btn kmk-panel-btn">
-        <i class="bi bi-person-workspace"></i> <?php echo $panelLabel; ?>
-      </a>
-      <?php endif; ?>
+    <div class="collapse navbar-collapse" id="financeNav">
+      <ul class="navbar-nav mx-auto mb-2 mb-lg-0 gap-2">
+        <li class="nav-item">
+          <a class="nav-link px-3 fw-semibold <?= $currentPage === 'vendor.php' ? 'text-primary' : 'text-dark' ?>" href="vendor.php">
+            <i class="bi bi-shop me-1"></i> Vendors
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link px-3 fw-semibold <?= $currentPage === 'employees.php' ? 'text-primary' : 'text-dark' ?>" href="employees.php">
+            <i class="bi bi-people me-1"></i> Employees
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link px-3 fw-semibold <?= $currentPage === 'expenses.php' ? 'text-primary' : 'text-dark' ?>" href="expenses.php">
+            <i class="bi bi-wallet2 me-1"></i> Expenses
+          </a>
+        </li>
+      </ul>
 
-      <span class="kmk-username">
-        Hello, <?php echo $userName; ?>
-      </span>
-      <a href="../logout.php" class="btn btn-sm btn-danger">
-        <i class="bi bi-box-arrow-right"></i> Logout
-      </a>
+      <div class="d-flex align-items-center gap-3">
+        <?php if (!empty($panelLink)): ?>
+          <a href="<?= $panelLink ?>" class="btn btn-primary btn-sm px-3 shadow-sm rounded-pill">
+            <i class="bi bi-person-workspace me-1"></i> <?= $panelLabel ?>
+          </a>
+        <?php endif; ?>
+        
+        <div class="vr mx-2 text-muted opacity-25 d-none d-lg-block"></div>
+        
+        <span class="small fw-bold text-secondary d-none d-md-block">
+          <i class="bi bi-person-circle me-1"></i> <?= h($userName) ?>
+        </span>
+        
+        <a href="../logout.php" class="btn btn-outline-danger btn-sm px-3 rounded-pill">
+          <i class="bi bi-box-arrow-right"></i>
+        </a>
+      </div>
     </div>
   </div>
 </nav>
-
-
-<style>
-  /* Container */
-  .kmk-navbar{
-    background:#ffffff;
-    border-bottom:1px solid #e5e7eb;
-    position:fixed;
-    top:0;
-    left:0;
-    width:100%;
-    z-index:1000;
-  }
-  .kmk-nav-inner{
-    max-width:1200px;
-    margin:0 auto;
-    padding:8px 16px;
-    /* --- CRITICAL: Use Flexbox for one-line layout --- */
-    display: flex;
-    justify-content: space-between; /* Puts Logo/Links/Right-Section apart */
-    align-items: center; /* Vertically centers all items */
-    min-height:56px;
-    /* Removed: position: relative; */
-  }
-
-  /* Logo left */
-  .kmk-brand{
-    display:inline-flex;
-    align-items:center;
-    text-decoration:none;
-  }
-  .kmk-logo{ height:49px; display:block; }
-
-  /* Centered links */
-  .kmk-center-links{
-    list-style:none;
-    margin:0;
-    padding:0;
-    
-    display:flex;
-    gap:24px;
-    align-items:center;
-    /* This allows the links to fill the middle space while respecting the logo/right-section width */
-    flex-grow: 1;
-    justify-content: center;
-    /* Add a small margin to prevent collision with logo and right section */
-    margin: 0 16px; 
-  }
-
-  .kmk-link{
-    text-decoration:none;
-    font-weight:500;
-    color:#212529;
-    padding:6px 10px;
-    border-radius:4px;
-    transition:color .15s ease, background .15s ease;
-  }
-  .kmk-link:hover{ color:#0d6efd; background:#f5f7ff; }
-  .kmk-link.is-active{
-    color:#0d6efd;
-    border-bottom:2px solid #0d6efd;
-  }
-
-  /* Right Section Styles */
-  .kmk-right-section {
-    display: flex;
-    align-items: center;
-    gap: 12px; /* Space between items (new button, username, logout) */
-    /* Ensure it doesn't shrink or grow */
-    flex-shrink: 0;
-  }
-
-  .kmk-username {
-    font-weight: bold;
-    color: #6c757d;
-    white-space: nowrap;
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* --- NEW STYLES FOR PANEL BUTTON --- */
-  .kmk-panel-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 6px 12px;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-    border-radius: 4px;
-    /* Primary Button Look (Using your active blue color) */
-    background-color: #0d6efd; 
-    color: white;
-    border: 1px solid #0d6efd;
-    transition: background-color .15s ease, border-color .15s ease, opacity .15s ease;
-    white-space: nowrap;
-  }
-
-  .kmk-panel-btn i {
-    margin-right: 6px;
-    font-size: 16px;
-  }
-
-  .kmk-panel-btn:hover {
-    background-color: #0b5ed7; /* Darker blue on hover */
-    border-color: #0b5ed7;
-    color: white; 
-    opacity: 0.9;
-  }
-  /* --- END NEW STYLES --- */
-
-
-  /* Small screens - Adjust for responsive design */
-  @media (max-width: 992px){
-    /* Hide center links on medium screens to save space */
-    .kmk-center-links{
-      display: none;
-    }
-    .kmk-nav-inner {
-      justify-content: space-between;
-    }
-    .kmk-username {
-      display: none; /* Hide username on smaller screens, just show the buttons */
-    }
-    /* Panel button can stay visible on small screens */
-  }
-
-  /* Push page content below navbar */
-  body {
-    margin:0;
-    padding-top:60px; /* adjust to navbar height */
-  }
-</style>

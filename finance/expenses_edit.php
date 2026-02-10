@@ -1,124 +1,118 @@
 <?php
-// kmk/finance/expenses_edit.php
-declare(strict_types=1);
-require_once dirname(__DIR__) . '/functions.php';
+/**
+ * FINANCE: Edit Expense
+ * Path: finance/expenses_edit.php
+ */
+require_once("../auth.php");
+requireRole(['Admin', 'Finance']);
+require_once("../functions.php");
 
-$id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
-if ($id <= 0) { header('Location: expenses.php'); exit; }
+$id = (int)($_GET['id'] ?? 0);
+if ($id <= 0) { header("Location: expenses.php"); exit; }
+
+include 'header.php';
+include 'nav.php';
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Edit Expense</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-<style> body { background:#f6f8fb; } </style>
-</head>
-<body>
-<?php include 'nav.php'; ?>
 
-<div class="container py-4" style="max-width: 720px;">
-  <h3 class="mb-3">Edit Expense</h3>
-
-  <div id="errBox" class="alert alert-danger d-none"></div>
-  <div id="okBox" class="alert alert-success d-none"></div>
-
-  <form id="expForm" class="card p-3">
-    <input type="hidden" id="expId" name="id" value="<?php echo (int)$id; ?>" />
-
-    <div class="mb-3">
-      <label class="form-label">Purpose *</label>
-      <input type="text" name="purpose" id="purpose" class="form-control" required />
+<div class="container py-4" style="max-width: 800px;">
+    <div class="d-flex justify-content-between align-items-center mb-4 border-bottom pb-3">
+        <div>
+            <h2 class="fw-bold h4 mb-0 text-dark">Modify Expense Record</h2>
+            <p class="text-muted small mb-0">Update ledger entries and payment realization.</p>
+        </div>
+        <a href="expenses.php" class="btn btn-outline-secondary rounded-pill px-4 fw-bold shadow-sm">Cancel</a>
     </div>
 
-    <div class="row g-3">
-      <div class="col-md-6">
-        <label class="form-label">Amount (₹) *</label>
-        <input type="number" step="1" name="amount" id="amount" class="form-control" required />
-      </div>
-      <div class="col-md-6">
-        <label class="form-label">Total Paid (₹)</label>
-        <input type="number" step="1" name="balance_paid" id="balance_paid" class="form-control" />
-      </div>
-    </div>
+    <div id="alertBox"></div>
 
-    <div class="mb-3 mt-3">
-      <label class="form-label">Remark</label>
-      <textarea name="remark" id="remark" rows="2" class="form-control"></textarea>
-    </div>
+    <div class="card shadow-sm border-0 rounded-4 overflow-hidden">
+        <div class="card-header bg-primary text-white py-3">
+            <h6 class="mb-0 fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Transaction Details</h6>
+        </div>
+        <div class="card-body p-4 bg-light">
+            <form id="editForm">
+                <input type="hidden" name="id" value="<?= $id ?>">
+                
+                <div class="row g-3 mb-4">
+                    <div class="col-md-12">
+                        <label class="form-label small fw-bold text-muted text-uppercase">Purpose / Category</label>
+                        <input type="text" name="purpose" id="e_purpose" class="form-control border-2" required>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold text-muted text-uppercase">Gross Amount (₹)</label>
+                        <input type="number" step="0.01" name="amount" id="e_amount" class="form-control border-2 fw-bold text-dark" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold text-muted text-uppercase">Total Realized / Paid (₹)</label>
+                        <input type="number" step="0.01" name="balance_paid" id="e_paid" class="form-control border-2 text-success fw-bold">
+                    </div>
+                </div>
 
-    <div class="d-flex gap-2">
-      <button class="btn btn-primary" type="submit">Update</button>
-      <a class="btn btn-secondary" href="expenses.php">Cancel</a>
+                <div class="row g-3 mb-4 p-3 bg-white rounded-4 border">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold text-muted">A/C NUMBER</label>
+                        <input type="text" name="account_no" id="e_account" class="form-control">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-bold text-muted">IFSC CODE</label>
+                        <input type="text" name="ifsc_code" id="e_ifsc" class="form-control">
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label small fw-bold text-muted">INTERNAL REMARK</label>
+                    <textarea name="remark" id="e_remark" class="form-control" rows="3"></textarea>
+                </div>
+
+                <div class="d-grid">
+                    <button type="submit" class="btn btn-primary btn-lg rounded-pill shadow py-3 fw-bold">
+                        <i class="bi bi-check-lg me-2"></i> Update Expense Entry
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
-  </form>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-(function(){
-  const API = 'api/expenses_api.php';
-  const id  = document.getElementById('expId').value;
-  const errBox = document.getElementById('errBox');
-  const okBox  = document.getElementById('okBox');
-  const form   = document.getElementById('expForm');
-
-  function showErr(msg){
-    errBox.textContent = msg || 'Something went wrong';
-    errBox.classList.remove('d-none'); okBox.classList.add('d-none');
-  }
-  function showOk(msg){
-    okBox.textContent = msg || 'Saved';
-    okBox.classList.remove('d-none'); errBox.classList.add('d-none');
-  }
-
-  async function loadExpense(){
+$(document).ready(async function() {
+    // Load existing data
     try {
-      const r = await fetch(API + '?action=get&id=' + encodeURIComponent(id));
-      const t = await r.text();
-      let j;
-      try { j = JSON.parse(t); } catch(e){ showErr('API did not return JSON. Response: ' + t.slice(0,300)); return; }
-      if (j.status !== 'success' || !j.expense){ showErr(j.message || 'Expense not found'); return; }
+        const res = await fetch('api/expenses_api.php?action=getExpense&id=<?= $id ?>');
+        const j = await res.json();
+        if (j.status === 'success') {
+            const exp = j.expense;
+            $('#e_purpose').val(exp.purpose);
+            $('#e_amount').val(exp.amount);
+            $('#e_paid').val(exp.balance_paid);
+            $('#e_account').val(exp.account_no);
+            $('#e_ifsc').val(exp.ifsc_code);
+            $('#e_remark').val(exp.remark);
+        } else {
+            alert('Expense not found');
+            window.location.href = 'expenses.php';
+        }
+    } catch (e) {
+        alert('Failed to load record.');
+    }
 
-      const exp = j.expense;
-      document.getElementById('purpose').value      = exp.purpose || '';
-      document.getElementById('amount').value       = exp.amount ?? '';
-      document.getElementById('balance_paid').value = exp.balance_paid ?? '';
-      document.getElementById('remark').value       = exp.remark || '';
-    } catch(e){ showErr('Failed to load expense.'); }
-  }
-  loadExpense();
+    // Submit update
+    $('#editForm').on('submit', async function(e) {
+        e.preventDefault();
+        const fd = new FormData(this);
+        fd.append('action', 'update');
 
-  form.addEventListener('submit', async function(e){
-    e.preventDefault();
-
-    const purpose = document.getElementById('purpose').value.trim();
-    const amount  = parseInt(document.getElementById('amount').value || '0', 10);
-    const paid    = parseInt(document.getElementById('balance_paid').value || '0', 10);
-
-    if (!purpose){ showErr('Purpose is required'); return; }
-    if (!(amount > 0)){ showErr('Amount must be greater than zero'); return; }
-    if (paid < 0){ showErr('Total paid cannot be negative'); return; }
-    if (paid > amount){ showErr('Total paid cannot exceed amount'); return; }
-
-    const fd = new FormData(form);
-    fd.append('action','update');
-
-    try {
-      const r = await fetch(API, { method:'POST', body: fd });
-      const t = await r.text();
-      let j;
-      try { j = JSON.parse(t); } catch(_){ showErr('API did not return JSON. Response: ' + t.slice(0,300)); return; }
-      if (j.status === 'success') {
-        showOk('Expense updated');
-        setTimeout(()=>{ window.location.href = 'expenses.php?updated=1'; }, 600);
-      } else {
-        showErr(j.message || 'Update failed');
-      }
-    } catch(err){ showErr('Request failed.'); }
-  });
-})();
+        const res = await fetch('api/expenses_api.php', { method: 'POST', body: fd });
+        const j = await res.json();
+        if (j.status === 'success') {
+            $('#alertBox').html('<div class="alert alert-success fw-bold rounded-4 shadow-sm mb-4">Record updated. Redirecting...</div>');
+            setTimeout(() => window.location.href = 'expenses.php', 1200);
+        } else {
+            $('#alertBox').html('<div class="alert alert-danger fw-bold rounded-4 shadow-sm mb-4">' + j.message + '</div>');
+        }
+    });
+});
 </script>
-</body>
-</html>
+
+<?php include 'footer.php'; ?>

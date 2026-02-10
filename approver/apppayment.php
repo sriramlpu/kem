@@ -1,9 +1,9 @@
 <?php
 /**
  * APPROVER: Review / Approval / Modification Form.
- * FIXED: Unknown column 'employee_id' in advances table -> Changed to 'entity_id'.
- * FIXED: Changed 'full_name' to 'username' for requester identification.
- * FIXED: Robust ID extraction and polymorphic lookup logic.
+ * Path: apppayment.php
+ * UPDATED: Mirroring Simplified Payroll (No HRA/DA/Basic).
+ * UPDATED: Added overrides for OT, Incentives, PT, and TDS.
  */
 session_start();
 require_once("../auth.php");
@@ -22,39 +22,15 @@ $rid = i($_GET['rid'] ?? $_POST['request_id'] ?? $_REQUEST['rid'] ?? 0);
 
 /**
  * Fetch Outstanding Advance for an Employee
- * FIXED: Using 'entity_id' to match KMK schema
  */
 function employee_advance_balance(?int $id): float {
     if (!$id) return 0.0;
-    // Database table 'advances' uses entity_id, not employee_id
     $r = exeSql("SELECT SUM(amount - IFNULL(recovered_amount, 0)) as bal FROM advances WHERE entity_id=$id AND entity_type='employee' AND status='Active'");
     return (float)($r[0]['bal'] ?? 0);
 }
 
-function fetch_paid_amount(array $req): float {
-    $type = $req['request_type'] ?? '';
-    $payload = json_decode($req['payload_json'] ?? '{}', true) ?: [];
-    $paid = 0.00;
-    
-    if ($type === 'employee') {
-        $r = exeSql("SELECT SUM(amount) AS s FROM employee_salary_payments WHERE employee_id = " . i($req['employee_id']));
-        $paid = (float)($r[0]['s'] ?? 0);
-    } elseif ($type === 'fixed') {
-        $r = exeSql("SELECT balance_paid FROM fixed_expenses WHERE id = " . i($payload['fixed_id'] ?? 0));
-        $paid = (float)($r[0]['balance_paid'] ?? 0);
-    } elseif ($type === 'vendor') {
-        $grn_ids = array_filter(array_map('i', (array)($payload['grn_ids'] ?? [])));
-        if ($grn_ids) {
-            $r = exeSql("SELECT SUM(amount + IFNULL(advance_used,0)) AS s FROM vendor_grn_payments WHERE grn_id IN (" . implode(',',$grn_ids) . ")");
-            $paid = (float)($r[0]['s'] ?? 0);
-        }
-    }
-    return $paid;
-}
-
 /**
  * Lookup Username
- * FIXED: Changed from full_name to username
  */
 function username_lookup(int $id): string {
     $r = exeSql("SELECT username FROM users WHERE user_id = $id LIMIT 1");
@@ -71,10 +47,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
     
     // Capture potential edits (Approver Overrides)
     if ($req['request_type'] === 'employee') {
-        $payload['gross_salary'] = (float)($_POST['gross_salary'] ?? ($payload['gross_salary'] ?? 0));
-        $payload['esi_deduction'] = (float)($_POST['esi_deduction'] ?? ($payload['esi_deduction'] ?? 0));
-        $payload['pf_deduction'] = (float)($_POST['pf_deduction'] ?? ($payload['pf_deduction'] ?? 0));
-        $payload['lop_amount'] = (float)($_POST['lop_amount'] ?? ($payload['lop_amount'] ?? 0));
+        $payload['gross_salary'] = (float)($_POST['gross_salary'] ?? 0);
+        $payload['incentives']   = (float)($_POST['incentives'] ?? 0);
+        $payload['ot_amount']    = (float)($_POST['ot_amount'] ?? 0);
+        $payload['lop_amount']   = (float)($_POST['lop_amount'] ?? 0);
+        $payload['pf_deduction'] = (float)($_POST['pf_deduction'] ?? 0);
+        $payload['esi_deduction']= (float)($_POST['esi_deduction'] ?? 0);
+        $payload['tax_deduction']= (float)($_POST['tax_deduction'] ?? 0); // Used for PT
+        $payload['tds_deduction']= (float)($_POST['tds_deduction'] ?? 0);
     }
 
     $payload['pay_now'] = (float)s($_POST['pay_now'] ?? '0');
@@ -89,12 +69,12 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
             'approved_by' => (int)$_SESSION['userId'],
             'approved_at' => $now,
             'total_amount' => $payload['pay_now'],
-            'payload_json' => json_encode($payload)
+            'payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE)
         ];
     } elseif ($action==='reject') {
-        $up = ['status' => 'RETURNED', 'payload_json' => json_encode($payload)];
+        $up = ['status' => 'RETURNED', 'payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE)];
     } else {
-        $up = ['payload_json' => json_encode($payload), 'total_amount' => $payload['pay_now']];
+        $up = ['payload_json' => json_encode($payload, JSON_UNESCAPED_UNICODE), 'total_amount' => $payload['pay_now']];
     }
 
     $up['updated_at'] = $now;
@@ -144,6 +124,8 @@ if ($req['request_type'] === 'employee') {
         .card { border-radius: 20px; border: 0; box-shadow: 0 15px 35px rgba(0,0,0,0.05); overflow: hidden; }
         .info-label { font-size: 0.65rem; font-weight: 800; color: #95a5a6; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; display: block; }
         .info-value { font-size: 1.1rem; font-weight: 700; color: #2c3e50; }
+        .text-danger-bold { color: #dc3545; font-weight: 800; }
+        .text-success-bold { color: #198754; font-weight: 800; }
         .bg-error { background-color: #fff5f5 !important; border: 1px solid #feb2b2 !important; }
         .form-control:focus { box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.1); border-color: #0d6efd; }
     </style>
@@ -161,8 +143,8 @@ if ($req['request_type'] === 'employee') {
 </nav>
 
 <div class="container py-2 pb-5">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="mb-0 text-dark fw-bold h4">Authorization Panel: #<?= $rid ?></h2>
+    <div class="d-flex justify-content-between align-items-center mb-4 text-center">
+        <h2 class="mx-auto text-dark fw-bold h4">Authorization Desk: Request #<?= $rid ?></h2>
     </div>
 
     <?php if ($hasError): ?>
@@ -170,7 +152,7 @@ if ($req['request_type'] === 'employee') {
             <i class="bi bi-exclamation-octagon-fill fs-3 me-3"></i>
             <div>
                 <h6 class="mb-1 fw-bold">ESI Compliance Error</h6>
-                <p class="mb-0 small">Gross Salary > ₹21,000. ESI must be ₹0.00. <strong>Correct the values below before approving.</strong></p>
+                <p class="mb-0 small">Gross Salary > ₹21,000. ESI must be ₹0.00. <strong>Please adjust the values below.</strong></p>
             </div>
         </div>
     <?php endif; ?>
@@ -190,7 +172,7 @@ if ($req['request_type'] === 'employee') {
             <div class="card-body p-4 bg-white">
                 <div class="row g-4 mb-4 border-bottom pb-4">
                     <div class="col-md-4 border-end">
-                        <label class="info-label">Requested By (Username)</label>
+                        <label class="info-label">Requested By</label>
                         <div class="info-value"><?=h($requester_name)?></div>
                     </div>
                     <div class="col-md-4 border-end text-center">
@@ -198,49 +180,71 @@ if ($req['request_type'] === 'employee') {
                         <div class="info-value text-primary h4 mb-0">₹<?=number_format((float)$req['total_amount'],2)?></div>
                     </div>
                     <div class="col-md-4 text-end">
-                        <label class="info-label text-success">Outstanding Advance</label>
+                        <label class="info-label text-danger">O/S ADVANCE BALANCE</label>
                         <?php $adv = employee_advance_balance((int)$req['employee_id']); ?>
                         <div class="info-value <?= $adv > 0 ? 'text-danger' : 'text-success' ?>">₹<?=number_format($adv, 2)?></div>
                     </div>
                 </div>
 
-                <!-- Breakdown Management -->
+                <!-- Simplified Breakdown Overrides -->
                 <?php if($req['request_type'] === 'employee'): ?>
                     <div class="p-4 bg-light rounded-4 mb-4 border <?= $hasError ? 'bg-error' : '' ?>">
-                        <h6 class="fw-bold text-muted text-uppercase small mb-3">Salary Breakdown Overrides</h6>
+                        <h6 class="fw-bold text-muted text-uppercase small mb-3 border-bottom pb-2">Earning & Deduction Overrides</h6>
+                        
+                        <!-- Row 1: Earnings -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-muted">GROSS SALARY</label>
+                                <input type="number" step="0.01" name="gross_salary" class="form-control fw-bold" value="<?= (float)($payload['gross_salary'] ?? 0) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-muted">INCENTIVES</label>
+                                <input type="number" step="0.01" name="incentives" class="form-control text-success fw-bold" value="<?= (float)($payload['incentives'] ?? 0) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-muted">OT AMOUNT</label>
+                                <input type="number" step="0.01" name="ot_amount" class="form-control text-success fw-bold" value="<?= (float)($payload['ot_amount'] ?? 0) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-danger">LOP AMOUNT</label>
+                                <input type="number" step="0.01" name="lop_amount" class="form-control text-danger fw-bold border-danger-subtle" value="<?= (float)($payload['lop_amount'] ?? 0) ?>">
+                            </div>
+                        </div>
+
+                        <!-- Row 2: Statutory Deductions -->
                         <div class="row g-3">
                             <div class="col-md-3">
-                                <label class="small fw-bold">Gross Salary</label>
-                                <input type="number" step="0.01" name="gross_salary" class="form-control" value="<?= (float)($payload['gross_salary'] ?? 0) ?>">
-                            </div>
-                            <div class="col-md-3">
-                                <label class="small fw-bold">ESI Deduction</label>
-                                <input type="number" step="0.01" name="esi_deduction" class="form-control <?= $hasError ? 'is-invalid' : '' ?>" value="<?= (float)($payload['esi_deduction'] ?? 0) ?>">
-                            </div>
-                            <div class="col-md-3">
-                                <label class="small fw-bold">PF Deduction</label>
+                                <label class="small fw-bold text-muted">PF DEDUCTION</label>
                                 <input type="number" step="0.01" name="pf_deduction" class="form-control" value="<?= (float)($payload['pf_deduction'] ?? 0) ?>">
                             </div>
                             <div class="col-md-3">
-                                <label class="small fw-bold">LOP Amount</label>
-                                <input type="number" step="0.01" name="lop_amount" class="form-control" value="<?= (float)($payload['lop_amount'] ?? 0) ?>">
+                                <label class="small fw-bold text-muted">ESI DEDUCTION</label>
+                                <input type="number" step="0.01" name="esi_deduction" class="form-control <?= $hasError ? 'is-invalid' : '' ?>" value="<?= (float)($payload['esi_deduction'] ?? 0) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-muted">PROF. TAX (PT)</label>
+                                <input type="number" step="0.01" name="tax_deduction" class="form-control" value="<?= (float)($payload['tax_deduction'] ?? 0) ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="small fw-bold text-muted">TDS DEDUCTION</label>
+                                <input type="number" step="0.01" name="tds_deduction" class="form-control" value="<?= (float)($payload['tds_deduction'] ?? 0) ?>">
                             </div>
                         </div>
                     </div>
                 <?php endif; ?>
 
                 <div class="row g-4 pt-2">
-                    <div class="col-md-6">
-                        <label class="form-label fw-bold">Final Approved Amount</label>
+                    <div class="col-md-6 border-end">
+                        <label class="form-label fw-bold h6 text-dark">FINAL AUTHORIZED NET PAYOUT *</label>
                         <div class="input-group input-group-lg border rounded-3">
                             <span class="input-group-text bg-white border-0 text-muted">₹</span>
-                            <input type="number" step="0.01" name="pay_now" class="form-control border-0 fw-bold text-primary" value="<?= (float)$initial_pay_now ?>" required>
+                            <input type="number" step="0.01" name="pay_now" class="form-control border-0 fw-bold text-success-bold" value="<?= (float)$initial_pay_now ?>" required>
                         </div>
-                        <small class="text-muted d-block mt-2">Adjust this figure if manual recovery or partial approval is needed.</small>
+                        <small class="text-muted d-block mt-2">The Cashier will disburse exactly this amount.</small>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label fw-bold">Decision Remarks</label>
-                        <textarea name="notes" class="form-control" rows="3" placeholder="Add comments for the requester or instructions for the cashier..."><?=h($payload['notes']??'')?></textarea>
+                        <label class="form-label fw-bold small text-muted">DECISION REMARKS / INSTRUCTIONS</label>
+                        <textarea name="notes" class="form-control border-2" rows="3" placeholder="Explain rejection reason or specify special payment instructions..."><?=h($payload['notes']??'')?></textarea>
                     </div>
                 </div>
             </div>
@@ -248,13 +252,13 @@ if ($req['request_type'] === 'employee') {
             <div class="card-footer bg-light p-4 border-0">
                 <div class="d-flex justify-content-center gap-3">
                     <button type="submit" name="wf_action" value="approve" class="btn btn-success btn-lg px-5 rounded-pill shadow-sm fw-bold" <?= $hasError ? 'disabled' : '' ?>>
-                        <i class="bi bi-check-lg me-1"></i> Approve
+                        <i class="bi bi-check-lg me-1"></i> Authorize & Send to Cashier
                     </button>
                     <button type="submit" name="wf_action" value="reject" class="btn btn-danger btn-lg px-5 rounded-pill shadow-sm fw-bold">
-                        <i class="bi bi-x-lg me-1"></i> Return
+                        <i class="bi bi-arrow-left-short me-1"></i> Return to Requester
                     </button>
-                    <button type="submit" name="wf_action" value="save" class="btn btn-primary btn-lg px-5 rounded-pill shadow-sm fw-bold">
-                        <i class="bi bi-save me-1"></i> Save Changes
+                    <button type="submit" name="wf_action" value="save" class="btn btn-dark btn-lg px-5 rounded-pill shadow-sm fw-bold">
+                        <i class="bi bi-save me-1"></i> Save Changes Only
                     </button>
                 </div>
             </div>

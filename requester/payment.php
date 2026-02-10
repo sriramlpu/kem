@@ -1,14 +1,4 @@
 <?php 
-/**
- * REQUESTER: Create/Update Payment Request (vendor/employee/expenses + FIXED EXPENSES)
- * Path: kmk/finance/requester/payment.php
- *
- * NEW in this version:
- * - Adds "Fixed Expenses" (pulls from fixed_expenses, shows amount/paid/remaining; pays pending).
- * - GRN amount now reduced by returns (goods_return_notes) before computing balance.
- * - Duplicate guards extended to fixed expenses (one open request per fixed_id).
- * - All previous features kept (duplicate GRN/employee/expenses checks, edit-while-submitted, etc.).
- */
 declare(strict_types=1);
 
 if (session_status() === PHP_SESSION_NONE) { session_start(); }

@@ -1,18 +1,31 @@
 <?php
-// kmk/finance/expenses_delete.php
+/**
+ * FINANCE: Delete Expense (Redirect Fallback)
+ * Path: finance/expenses_delete.php
+ */
 declare(strict_types=1);
-require_once dirname(__DIR__) . '/functions.php';
 
-$id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+require_once("../auth.php");
+requireRole(['Admin', 'Finance']);
+require_once("../functions.php");
+
+$id = (int)($_GET['id'] ?? 0);
+
 if ($id <= 0) {
-  header('Location: expenses.php?err=invalid'); exit;
+    header("Location: expenses.php?err=invalid_id");
+    exit;
 }
 
-// Hard delete this expense
-$ok = exeSql("DELETE FROM expenses WHERE id={$id} LIMIT 1");
+try {
+    // Perform hard delete
+    $ok = exeSql("DELETE FROM expenses WHERE id = $id LIMIT 1");
 
-// Redirect back with a flag
-if ($ok === false) {
-  header('Location: expenses.php?err=delete_failed'); exit;
+    if ($ok === false) {
+        header("Location: expenses.php?err=delete_failed");
+    } else {
+        header("Location: expenses.php?msg=deleted");
+    }
+} catch (Exception $e) {
+    header("Location: expenses.php?err=" . urlencode($e->getMessage()));
 }
-header('Location: expenses.php?deleted=1'); exit;
+exit;
